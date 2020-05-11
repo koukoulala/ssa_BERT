@@ -186,6 +186,10 @@ parser.add_argument("--co_training",
                     default=False,
                     action='store_true',
                     help="Whether to do co_training.")
+parser.add_argument("--share_weight",
+                    default=1,
+                    type=int,
+                    help="Whether to share weight.")
 parser.add_argument("--double_ori",
                     default=1,
                     type=int,
