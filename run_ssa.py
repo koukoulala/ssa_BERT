@@ -76,7 +76,10 @@ parser.add_argument("--vocab_file",
                     default='./vocab.txt',
                     type=str,
                     help="The output directory where the model predictions and checkpoints will be written.")
-
+parser.add_argument("--only_bert",
+                    default=0,
+                    type=int,
+                    help="Only running bert.")
 
 ## Other parameters
 parser.add_argument("--cache_dir",
@@ -191,13 +194,17 @@ parser.add_argument("--share_weight",
                     type=int,
                     help="Whether to share weight.")
 parser.add_argument("--double_ori",
-                    default=1,
+                    default=0,
                     type=int,
                     help="Whether to double original data.")
 parser.add_argument("--aug_ratio_each",
                     default=0.2,
                     type=float,
                     help="The mask ration of each epoch")
+parser.add_argument("--do_first_test",
+                    default=0,
+                    type=int,
+                    help="Whether to do first test.")
 
 
 args = parser.parse_args()
@@ -383,19 +390,52 @@ def main(args):
                                                   cache_dir=args.ckpt_cache_dir,
                                                   num_labels=num_labels,
                                                   args=args)
+        elif args.only_bert:
+            model = BertForSequenceClassification.from_pretrained(bert_saved_dir,
+                                                                  cache_dir=args.ckpt_cache_dir,
+                                                                  num_labels=num_labels)
         else:
             model = BertForNSPAug.from_pretrained(bert_saved_dir,
                                               cache_dir=args.ckpt_cache_dir,
                                               num_labels=num_labels,
                                               args=args)
     else:
-        model = BertForNSPAug.from_pretrained(args.bert_model,
-                                          cache_dir=cache_dir,
-                                          num_labels=num_labels,
-                                          args=args)
+        if args.only_bert:
+            model = BertForSequenceClassification.from_pretrained(args.bert_model,
+                                                                  cache_dir=cache_dir,
+                                                                  num_labels=num_labels)
+        else:
+            model = BertForNSPAug.from_pretrained(args.bert_model,
+                                              cache_dir=cache_dir,
+                                              num_labels=num_labels,
+                                              args=args)
     model.cuda()
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
+
+    if args.do_first_test:
+        args.do_train = False
+        res_file = os.path.join(args.output_dir,
+                                "first_test.tsv")
+
+        idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model)
+
+        dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
+        dataframe.to_csv(res_file, index=False, sep='\t')
+        logger.info("  Num test length = %d", idx)
+        logger.info("  Done ")
+
+        # write mm test results
+        if task_name == "mnli":
+            res_file = os.path.join(args.output_dir,
+                                    "first_test_mm.tsv")
+
+            idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, do_mm=True)
+
+            dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
+            dataframe.to_csv(res_file, index=False, sep='\t')
+            logger.info("  Num test length = %d", idx)
+            logger.info("  Done write mm")
 
 
     if args.do_train:
@@ -424,20 +464,24 @@ def main(args):
         aug_ratio = 0.0
         aug_seed = np.random.randint(0, 1000)
         for epoch in range(int(args.num_train_epochs)):
-            logger.info("epoch=%d,  aug_ratio = %f,  aug_seed=%d", epoch, aug_ratio, aug_seed)
-            if epoch == 0:
-                tmp_aug_ratio = 0.0
+            if args.only_bert:
+                train_features = convert_examples_to_features(ori_train_examples, label_list, args.max_seq_length,
+                                tokenizer, num_show=args.num_show, output_mode=output_mode, args=args)
             else:
-                tmp_aug_ratio = aug_ratio
-            train_examples = Aug_each_ckpt(ori_train_examples, label_list, model, tokenizer, args=args,
-                                         num_show=args.num_show, output_mode=output_mode, seed=aug_seed,
-                                         aug_ratio=tmp_aug_ratio, use_bert=False)
-            if aug_ratio + args.aug_ratio_each < 1.0:
-                aug_ratio += args.aug_ratio_each
-            aug_seed += 1
+                logger.info("epoch=%d,  aug_ratio = %f,  aug_seed=%d", epoch, aug_ratio, aug_seed)
+                if epoch == 0:
+                    tmp_aug_ratio = 0.0
+                else:
+                    tmp_aug_ratio = aug_ratio
+                train_examples = Aug_each_ckpt(ori_train_examples, label_list, model, tokenizer, args=args,
+                                             num_show=args.num_show, output_mode=output_mode, seed=aug_seed,
+                                             aug_ratio=tmp_aug_ratio, use_bert=False)
+                if aug_ratio + args.aug_ratio_each < 1.0:
+                    aug_ratio += args.aug_ratio_each
+                aug_seed += 1
 
-            train_features = convert_examples_to_features(train_examples, label_list, args.max_seq_length, tokenizer,
-                                                          num_show=args.num_show, output_mode=output_mode, args=args)
+                train_features = convert_examples_to_features(train_examples, label_list, args.max_seq_length, tokenizer,
+                                                              num_show=args.num_show, output_mode=output_mode, args=args)
             logger.info("Done convert features")
             all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
             all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
@@ -463,7 +507,10 @@ def main(args):
             for step, batch in enumerate(train_dataloader):
                 batch = tuple(t.cuda() for t in batch)
                 input_ids, input_mask, segment_ids, label_ids, token_real_label = batch
-                seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None, token_real_label=token_real_label)
+                if args.only_bert:
+                    seq_logits = model(input_ids, segment_ids, input_mask, labels=None)
+                else:
+                    seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None, token_real_label=token_real_label)
                 if output_mode == "classification":
                     loss_fct = CrossEntropyLoss()
                     seq_loss = loss_fct(seq_logits.view(-1, num_labels), label_ids.view(-1))
@@ -471,12 +518,14 @@ def main(args):
                     loss_fct = MSELoss()
                     seq_loss = loss_fct(seq_logits.view(-1), label_ids.view(-1))
 
-                #
                 token_real_label = token_real_label.detach().cpu().numpy()
 
                 w = args.aug_loss_weight
-                total_loss = (1 - w) * seq_loss + w * aug_loss
-                loss = total_loss
+                if args.only_bert:
+                    loss = seq_loss
+                else:
+                    loss = (1 - w) * seq_loss + w * aug_loss
+
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -501,12 +550,12 @@ def main(args):
                     preds[0] = np.append(preds[0], seq_logits, axis=0)
                     all_labels[0] = np.append(all_labels[0], label_ids,axis=0)
 
-                aug_logits = aug_logits.detach().cpu().numpy()
-
-                tmp_train_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
-                train_aug_accuracy += tmp_train_aug_accuracy
-                nb_tr_tokens += tmp_tokens
-                tr_aug_loss += aug_loss.mean().item()
+                if args.only_bert == 0:
+                    aug_logits = aug_logits.detach().cpu().numpy()
+                    tmp_train_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
+                    train_aug_accuracy += tmp_train_aug_accuracy
+                    nb_tr_tokens += tmp_tokens
+                    tr_aug_loss += aug_loss.mean().item()
 
                 if global_step % 20 == 0:
                     loss = tr_loss / nb_tr_steps
@@ -623,7 +672,7 @@ def main(args):
                     logger.info("  tmp_val_acc = %f", tmp_acc)
 
 
-def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mode, num_labels, task_name, eval_examples, only_seq=False, type="dev"):
+def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mode, num_labels, task_name, eval_examples, type="dev"):
 
     nb_eval_steps, nb_eval_examples, nb_eval_tokens = 0, 0, 0
     eval_loss, eval_seq_loss, eval_aug_loss, eval_seq_accuracy, eval_aug_accuracy = 0, 0, 0, 0, 0
@@ -670,7 +719,10 @@ def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mod
             input_ids, input_mask, segment_ids, label_ids, token_real_label = batch
 
             with torch.no_grad():
-                seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None,
+                if args.only_bert:
+                    seq_logits = model(input_ids, segment_ids, input_mask, labels=None)
+                else:
+                    seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None,
                                                              token_real_label=token_real_label)
                 if output_mode == "classification":
                     loss_fct = CrossEntropyLoss()
@@ -679,8 +731,10 @@ def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mod
                     loss_fct = MSELoss()
                     seq_loss = loss_fct(seq_logits.view(-1), label_ids.view(-1))
                 w = args.aug_loss_weight
-                total_loss = (1 - w) * seq_loss + w * aug_loss
-                loss = total_loss
+                if args.only_bert:
+                    loss = seq_loss
+                else:
+                    loss = (1 - w) * seq_loss + w * aug_loss
 
             seq_logits = seq_logits.detach().cpu().numpy()
             label_ids = label_ids.detach().cpu().numpy()
@@ -693,12 +747,13 @@ def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mod
 
             eval_seq_loss += seq_loss.mean().item()
 
-            aug_logits = aug_logits.detach().cpu().numpy()
-            token_real_label = token_real_label.detach().cpu().numpy()
-            tmp_eval_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
-            eval_aug_accuracy += tmp_eval_aug_accuracy
-            nb_eval_tokens += tmp_tokens
-            eval_aug_loss += aug_loss.mean().item()
+            if args.only_bert == 0:
+                aug_logits = aug_logits.detach().cpu().numpy()
+                token_real_label = token_real_label.detach().cpu().numpy()
+                tmp_eval_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
+                eval_aug_accuracy += tmp_eval_aug_accuracy
+                nb_eval_tokens += tmp_tokens
+                eval_aug_loss += aug_loss.mean().item()
 
             eval_loss += loss.mean().item()
             nb_eval_examples += input_ids.size(0)
@@ -707,8 +762,7 @@ def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mod
             if nb_eval_steps % 10 == 0:
                 loss = eval_loss / nb_eval_steps
                 seq_loss = eval_seq_loss / nb_eval_steps
-                if only_seq == False:
-                    aug_loss = eval_aug_loss / nb_eval_steps
+                aug_loss = eval_aug_loss / nb_eval_steps
                 tmp_pred = preds[0]
                 tmp_labels = all_labels[0]
                 if output_mode == "classification":
@@ -735,8 +789,7 @@ def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mod
 
         eval_loss = eval_loss / nb_eval_steps
         eval_seq_loss = eval_seq_loss / nb_eval_steps
-        if only_seq == False:
-            eval_aug_loss = eval_aug_loss / nb_eval_steps
+        eval_aug_loss = eval_aug_loss / nb_eval_steps
         tmp_pred = preds[0]
         tmp_labels = all_labels[0]
         if output_mode == "classification":
@@ -802,7 +855,10 @@ def do_test(args, label_list, task_name, processor, tokenizer, output_mode, mode
         batch = tuple(t.cuda() for t in batch)
         input_ids, input_mask, segment_ids, token_real_label = batch
         with torch.no_grad():
-            seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None,
+            if args.only_bert:
+                seq_logits = model(input_ids, segment_ids, input_mask, labels=None)
+            else:
+                seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None,
                                                      token_real_label=token_real_label)
 
             seq_logits = seq_logits.detach().cpu().numpy()
