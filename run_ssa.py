@@ -175,17 +175,13 @@ parser.add_argument("--aug_threshold",
                     type=float,
                     help="The threshold of doing augmentation")
 parser.add_argument("--rm_threshold",
-                    default=0.9,
+                    default=0.7,
                     type=float,
                     help="The threshold of masking tokens")
 parser.add_argument("--use_saved",
-                    default=1,
+                    default=0,
                     type=int,
                     help="Whether to use saved bert_ckpt.")
-parser.add_argument("--do_first_eval",
-                    default=False,
-                    action='store_true',
-                    help="Whether to do do first evaluate.")
 parser.add_argument("--co_training",
                     default=False,
                     action='store_true',

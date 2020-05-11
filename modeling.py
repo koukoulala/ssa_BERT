@@ -994,100 +994,6 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
             return seq_relationship_score
 
 
-class BertSeqAttention_2(BertPreTrainedModel):
-
-    def __init__(self, config, num_labels, args):
-        super(BertSeqAttention_2, self).__init__(config)
-        if config.hidden_size % config.num_attention_heads != 0:
-            raise ValueError(
-                "The hidden size (%d) is not a multiple of the number of attention "
-                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
-        self.num_labels = num_labels
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
-        self.cls_weight = args.cls_weight
-        self.attention_threshold = args.attention_threshold
-        self.do_softmax = args.do_softmax
-        self.share_weight = args.share_weight
-
-    def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-        x = x.view(*new_x_shape)
-        return x.permute(0, 2, 1, 3)
-
-    def forward(self, sequence_output, attention_mask, token_real_label, aug_logits, pooled_output):
-        k = self.attention_threshold
-        attention_mask_1, attention_mask_2 = attention_mask, attention_mask
-        mask = torch.eq(token_real_label, -1)
-        attention_mask_1[mask] = 0
-
-        # Normalize the attention scores to probabilities.
-        if self.share_weight == 1:
-            attention_mask_1 = attention_mask_1.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
-            attention_mask_1 = (1.0 - attention_mask_1) * -10000.0
-
-            attention_scores = aug_logits[:, :, 1]
-            attention_scores = attention_scores + attention_mask_1
-            if self.do_softmax == 1:
-                attention_probs = nn.Softmax(dim=-1)(attention_scores)
-            else:
-                attention_probs = F.sigmoid(attention_scores)
-
-            mask = torch.lt(attention_probs, k)
-            attention_mask_2[mask] = 0
-            attention_mask_2 = attention_mask_2.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
-            attention_mask_2 = (1.0 - attention_mask_2) * -10000.0
-            attention_probs = attention_probs + attention_mask_2
-
-            if self.do_softmax == 1:
-                attention_probs = nn.Softmax(dim=-1)(attention_probs)
-            else:
-                attention_probs = F.sigmoid(attention_probs)
-
-        else:
-            attention_probs = None
-            for i in range(aug_logits.size(1)):
-                if i == 0:
-                    tmp_state = aug_logits[:, i, :].unsqueeze(1)
-                    tmp = nn.Softmax(dim=-1)(tmp_state)
-                    attention_probs = tmp
-                else:
-                    tmp_state = aug_logits[:, i, :].unsqueeze(1)
-                    tmp = nn.Softmax(dim=-1)(tmp_state)
-                    attention_probs = torch.cat((attention_probs, tmp), 1)
-            # print("attention_probs",attention_probs.size())
-            attention_probs = attention_probs[:, :, 1]
-            mask = torch.lt(attention_probs, k)
-            '''
-            num = 0
-            for i in range(mask.size()[0]):
-                print("attention_probs", i, attention_probs[i])
-                for j in range(mask.size()[1]):
-                    if mask[i][j] == 0:
-                        num += 1
-            print("mask==0:", num, mask.size()[0] * mask.size()[1])
-            '''
-            attention_mask_1[mask] = 0
-            attention_mask_1 = attention_mask_1.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
-            attention_mask_1 = (1.0 - attention_mask_1) * -10000.0
-            attention_probs = attention_probs + attention_mask_1
-            attention_probs = nn.Softmax(dim=-1)(attention_probs)
-            '''
-            for i in range(mask.size()[0]):
-                print("attention_probs_2", i, attention_probs[i])
-            '''
-
-        attention_probs = attention_probs.unsqueeze(1)
-        context_layer = torch.bmm(attention_probs, sequence_output).squeeze()
-        # concat CLS and content
-        # output=torch.cat((pooled_output,context_layer),1)
-        # set a param w
-        w = self.cls_weight
-        output = w * pooled_output + (1 - w) * context_layer
-
-        seq_logits = self.classifier(output.view(output.size(0), -1))
-        return seq_logits
-
-
 class BertSeqAttention(BertPreTrainedModel):
 
     def __init__(self, config, num_labels, args):
@@ -1100,7 +1006,6 @@ class BertSeqAttention(BertPreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.cls_weight = args.cls_weight
         self.attention_threshold = args.attention_threshold
-        self.do_softmax = args.do_softmax
         self.share_weight = args.share_weight
 
     def transpose_for_scores(self, x):
@@ -1125,24 +1030,12 @@ class BertSeqAttention(BertPreTrainedModel):
         # print("attention_probs",attention_probs.size())
         attention_probs = attention_probs[:, :, 1]
         mask = torch.lt(attention_probs, k)
-        '''
-        num = 0
-        for i in range(mask.size()[0]):
-            print("attention_probs", i, attention_probs[i])
-            for j in range(mask.size()[1]):
-                if mask[i][j] == 0:
-                    num += 1
-        print("mask==0:", num, mask.size()[0] * mask.size()[1])
-        '''
+
         attention_mask[mask] = 0
         attention_mask = attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
         attention_mask = (1.0 - attention_mask) * -10000.0
         attention_probs = attention_probs + attention_mask
         attention_probs = nn.Softmax(dim=-1)(attention_probs)
-        '''
-        for i in range(mask.size()[0]):
-            print("attention_probs_2", i, attention_probs[i])
-        '''
 
         attention_probs = attention_probs.unsqueeze(1)
         context_layer = torch.bmm(attention_probs, sequence_output).squeeze()
@@ -1219,7 +1112,6 @@ class BertForNSPAug(BertPreTrainedModel):
             self.token_cls = BertTokenAug_2(config, self.bert.embeddings.word_embeddings.weight, args)
         self.apply(self.init_bert_weights)
         self.aug_loss_weight = args.aug_loss_weight
-        self.aug_weight = args.aug_weight
         self.args = args
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, token_real_label=None):
@@ -1229,8 +1121,7 @@ class BertForNSPAug(BertPreTrainedModel):
         aug_logits = self.token_cls(sequence_output)
         seq_logits = self.seq_cls(sequence_output, attention_mask, token_real_label, aug_logits, pooled_output)
 
-        weight = torch.FloatTensor([self.aug_weight, 1.0]).cuda()
-        loss_fct_aug = CrossEntropyLoss(ignore_index=-1, weight=weight)
+        loss_fct_aug = CrossEntropyLoss(ignore_index=-1)
         aug_loss = loss_fct_aug(aug_logits.view(-1, 2), token_real_label.view(-1))
 
         if labels is not None:
@@ -1258,7 +1149,6 @@ class BertForNSP_co(BertPreTrainedModel):
             self.token_cls = BertTokenAug_2(config, self.bert.embeddings.word_embeddings.weight, args)
         self.apply(self.init_bert_weights)
         self.aug_loss_weight = args.aug_loss_weight
-        self.aug_weight = args.aug_weight
         self.args = args
 
         self.classifier = nn.Linear(config.hidden_size, num_labels)
@@ -1272,8 +1162,7 @@ class BertForNSP_co(BertPreTrainedModel):
         pooled_output = self.dropout(pooled_output)
         seq_logits = self.classifier(pooled_output)
 
-        weight = torch.FloatTensor([self.aug_weight, 1.0]).cuda()
-        loss_fct_aug = CrossEntropyLoss(ignore_index=-1, weight=weight)
+        loss_fct_aug = CrossEntropyLoss(ignore_index=-1)
         aug_loss = loss_fct_aug(aug_logits.view(-1, 2), token_real_label.view(-1))
 
         if labels is not None:
@@ -1284,72 +1173,6 @@ class BertForNSP_co(BertPreTrainedModel):
             return seq_logits, aug_logits, next_sentence_loss, aug_loss, total_loss
         else:
             return seq_logits, aug_logits, aug_loss
-
-class BertForOnlyAug(BertPreTrainedModel):
-    """BERT model with next sentence prediction head.
-
-    """
-
-    def __init__(self, config, args):
-        super(BertForOnlyAug, self).__init__(config)
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        if args.share_weight == 1:
-            self.token_cls = BertTokenAug(config, self.bert.embeddings.word_embeddings.weight)
-        else:
-            self.token_cls = BertTokenAug_2(config, self.bert.embeddings.word_embeddings.weight, args)
-        self.apply(self.init_bert_weights)
-        self.aug_weight = args.aug_weight
-        self.args = args
-
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, token_real_label=None):
-        sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
-                                                   output_all_encoded_layers=False,
-                                                   token_real_label=token_real_label)
-        aug_logits = self.token_cls(sequence_output)
-
-        # set weight for label=0
-        weight = torch.FloatTensor([self.aug_weight, 1.0]).cuda()
-        loss_fct = CrossEntropyLoss(ignore_index=-1, weight=weight)
-        aug_loss = loss_fct(aug_logits.view(-1, 2), token_real_label.view(-1))
-
-        return aug_logits, aug_loss
-
-
-class BertForOnlyNSP(BertPreTrainedModel):
-    """BERT model with next sentence prediction head.
-
-    """
-
-    def __init__(self, config, num_labels, args):
-        super(BertForOnlyNSP, self).__init__(config)
-        self.num_labels = num_labels
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.seq_cls = BertSeqAttention(config, num_labels, args)
-        if args.share_weight == 1:
-            self.token_cls = BertTokenAug(config, self.bert.embeddings.word_embeddings.weight)
-        else:
-            self.token_cls = BertTokenAug_2(config, self.bert.embeddings.word_embeddings.weight, args)
-        self.apply(self.init_bert_weights)
-        self.aug_loss_weight = args.aug_loss_weight
-        self.aug_weight = args.aug_weight
-        self.args = args
-
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, token_real_label=None):
-        sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
-                                                   output_all_encoded_layers=False,
-                                                   token_real_label=token_real_label)
-        aug_logits = self.token_cls(sequence_output)
-        seq_logits = self.seq_cls(sequence_output, attention_mask, token_real_label, aug_logits, pooled_output)
-
-        if labels is not None:
-            loss_fct_seq = CrossEntropyLoss(ignore_index=-1)
-            next_sentence_loss = loss_fct_seq(seq_logits.view(-1, self.num_labels), labels.view(-1))
-
-            return seq_logits, aug_logits, next_sentence_loss
-        else:
-            return seq_logits, aug_logits, aug_logits
 
 
 class BertForSequenceClassification(BertPreTrainedModel):
