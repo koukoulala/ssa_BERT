@@ -22,7 +22,6 @@ import logging
 import os
 import random
 import time
-import sys
 import pickle
 import numpy as np
 import pandas as pd
@@ -35,6 +34,8 @@ from configuration_roberta import RobertaConfig
 from modeling_roberta import RobertaForSequenceClassification, RobertaForNSP_co, RobertaForNSPAug
 from tokenization_roberta import RobertaTokenizer
 from optimization import AdamW, get_linear_schedule_with_warmup
+import sys
+sys.path.append("..")
 from data_util import *
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',

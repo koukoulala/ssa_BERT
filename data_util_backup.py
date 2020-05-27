@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader,TensorDataset,Dataset
 from torch.utils.data.sampler import  RandomSampler, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
+import tokenization
 import random
 import torch.nn.functional as F
 import logging
@@ -47,7 +49,7 @@ class InputFeatures(object):
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_id = label_id
-        self.token_real_label=token_real_label
+        self.token_real_label = token_real_label
 
 
 class DataProcessor(object):
@@ -97,7 +99,7 @@ class MrpcProcessor(DataProcessor):
 
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(
+        return self._create_test_examples(
             self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
 
     def get_labels(self):
@@ -117,6 +119,21 @@ class MrpcProcessor(DataProcessor):
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
+
+    def _create_test_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[3]
+            text_b = line[4]
+            label = None
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
 
 class MnliProcessor(DataProcessor):
     """Processor for the MultiNLI data set (GLUE version)."""
@@ -239,8 +256,8 @@ class Sst2Processor(DataProcessor):
 
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.tsv")),"test")
+        return self._create_test_examples(
+            self._read_tsv(os.path.join(data_dir, "test_nolabel.tsv")),"test")
 
     def get_labels(self):
         """See base class."""
@@ -432,7 +449,7 @@ class QnliProcessor(DataProcessor):
 class RteProcessor(DataProcessor):
     """Processor for the RTE data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir, type = "train.tsv"):
+    def get_train_examples(self, data_dir, type="train.tsv"):
         """See base class."""
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, type)), "train")
@@ -530,15 +547,15 @@ class WnliProcessor(DataProcessor):
 
 
 
-def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, type="train", num_show=5,
-                                 output_mode="classification", seed=42, args=None, pad_token=0, do_roberta=0):
+def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, type="train",
+                                 num_show=5, output_mode="classification", seed=42, args=None):
     """Loads a data file into a list of `InputBatch`s."""
 
     np.random.seed(seed)
-    label_map = {label : i for i, label in enumerate(label_list)}
+    label_map = {label: i for i, label in enumerate(label_list)}
 
     features = []
-    ex_index=0
+    ex_index = 0
     for (_, example) in enumerate(examples):
         tokens_a = tokenizer.tokenize(example.text_a)
         tokens_b = None
@@ -552,47 +569,36 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         if example.rand_index_b != None:
             rand_index_b = example.rand_index_b
         else:
-            rand_index_b = []
+            rand_index_b=[]
 
         if example.text_b:
             # Modifies `tokens_a` and `tokens_b` in place so that the total
             # length is less than the specified length.
             # Account for [CLS], [SEP], [SEP] with "- 3"
-            if do_roberta:
-                _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 4)
-            else:
-                _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3 )
+            _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3 )
         else:
             # Account for [CLS] and [SEP] with "- 2"
             if len(tokens_a) > max_seq_length - 2:
                 tokens_a = tokens_a[:(max_seq_length - 2 )]
 
 
-        if do_roberta:
-            tokens = ["<s>"] + tokens_a + ["</s>"]
-        else:
-            tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
         segment_ids = [0] * len(tokens)
 
         token_real_label = [1] * len(tokens)
         token_real_label[0] = -1
         token_real_label[-1] = -1
-        rand_index_a = [x + 1 for x in rand_index_a if x < len(tokens_a)]
+        rand_index_a = [x+1 for x in rand_index_a if x < len(tokens_a)]
         for idx in rand_index_a:
             token_real_label[idx] = 0
 
         if tokens_b:
-            more_special = 0
-            if do_roberta:
-                tokens += ["</s>"] + tokens_b + ["</s>"]
-                more_special = 1
-            else:
-                tokens += tokens_b + ["[SEP]"]
-            segment_ids += [1] * (len(tokens_b) + 1 + more_special)
+            tokens += tokens_b + ["[SEP]"]
+            segment_ids += [1] * (len(tokens_b) + 1)
 
-            token_real_label += [1] * (len(tokens_b) + 1 + more_special)
+            token_real_label += [1] * (len(tokens_b) + 1)
             token_real_label[-1] = -1
-            rand_index_b = [x + len(tokens_a) + 2 + more_special for x in rand_index_b if x < len(tokens_b)]
+            rand_index_b = [x + len(tokens_a) + 2 for x in rand_index_b if x < len(tokens_b)]
             for idx in rand_index_b:
                 token_real_label[idx] = 0
 
@@ -607,7 +613,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         # Zero-pad up to the sequence length.
         padding = [0] * (max_seq_length - len(input_ids))
         ignore_padding = [-1] * (max_seq_length - len(input_ids))
-        input_ids += [pad_token] * (max_seq_length - len(input_ids))
+        input_ids += padding
         input_mask += padding
         segment_ids += padding
         token_real_label += ignore_padding
@@ -617,7 +623,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(segment_ids) == max_seq_length
         assert len(token_real_label) == max_seq_length
 
-        if example.label==None:
+        if example.label == None:
             label_id = None
         else:
             if output_mode == "classification":
@@ -646,7 +652,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
                               segment_ids=segment_ids,
                               label_id=label_id,
                               token_real_label=token_real_label))
-        ex_index+=1
+        ex_index += 1
 
     return features
 
@@ -694,8 +700,7 @@ def rand_rm(rand_start,rand_end,rm_index,seed=42,args=None, tokens=None):
 
     return rm_index
 
-def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, max_seq_length, output_mode, num_show,
-             pad_token=0, do_roberta=0):
+def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, max_seq_length, output_mode, num_show):
 
     label_map = {label: i for i, label in enumerate(label_list)}
     auged_examples = []
@@ -709,9 +714,10 @@ def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, m
         label = example.label
 
         for i in range(cnt):
-            rand_index_a, rand_index_b=[],[]
-            rm_index_a, rm_index_b = [],[]
+            rand_index_a, rand_index_b = [], []
+            rm_index_a, rm_index_b = [], []
             if i >= num_no_aug:  # first several time is original
+
                 per_array_a = np.array(range(len(tokens_a)))
                 per_25_a = np.percentile(per_array_a, 25)
                 per_50_a = np.percentile(per_array_a, 50)
@@ -759,11 +765,7 @@ def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, m
                 # Modifies `tokens_a` and `tokens_b` in place so that the total
                 # length is less than the specified length.
                 # Account for [CLS], [SEP], [SEP] with "- 3"
-                if do_roberta:
-                    _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 4)
-                else:
-                    _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3 )
-
+                _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3 )
                 rm_tokens_b = ["[MASK]" if i in rm_index_b else x for i, x in enumerate(tokens_b)]
 
             else:
@@ -773,24 +775,16 @@ def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, m
 
             rm_tokens_a = ["[MASK]" if i in rm_index_a else x for i, x in enumerate(tokens_a)]
 
-            if do_roberta:
-                tokens = ["<s>"] + rm_tokens_a + ["</s>"]
-            else:
-                tokens = ["[CLS]"] + rm_tokens_a + ["[SEP]"]
+            tokens = ["[CLS]"] + rm_tokens_a + ["[SEP]"]
             segment_ids = [0] * len(tokens)
             token_real_label = [1] * len(tokens)
             token_real_label[0] = -1
             token_real_label[-1] = -1
 
             if example.text_b:
-                more_special = 0
-                if do_roberta:
-                    tokens += ["</s>"] + rm_tokens_b + ["</s>"]
-                    more_special = 1
-                else:
-                    tokens += rm_tokens_b + ["[SEP]"]
-                segment_ids += [1] * (len(rm_tokens_b) + 1 + more_special)
-                token_real_label += [1] * (len(rm_tokens_b) + 1 + more_special)
+                tokens += rm_tokens_b + ["[SEP]"]
+                segment_ids += [1] * (len(rm_tokens_b) + 1)
+                token_real_label += [1] * (len(rm_tokens_b) + 1)
                 token_real_label[-1] = -1
 
             input_ids = tokenizer.convert_tokens_to_ids(tokens)
@@ -802,7 +796,7 @@ def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, m
             # Zero-pad up to the sequence length.
             padding = [0] * (max_seq_length - len(input_ids))
             ignore_padding = [-1] * (max_seq_length - len(input_ids))
-            input_ids += [pad_token] * (max_seq_length - len(input_ids))
+            input_ids += padding
             input_mask += padding
             segment_ids += padding
             token_real_label += ignore_padding
@@ -841,11 +835,11 @@ def aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed, m
                               token_real_label=token_real_label))
             ex_index += 1
 
-    return features, auged_examples
+    return features,auged_examples
 
 
-def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_show=5, output_mode="classification",
-                    aug_ratio=0.2, seed=42, use_bert=True, do_roberta=0, ssa_roberta=0, pad_token=0):
+def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_show = 5, output_mode="classification",
+                        aug_ratio=0.2, seed=42, use_bert=True):
     if aug_ratio == 0:
         return ori_examples
     np.random.seed(seed)
@@ -853,7 +847,8 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
     max_seq_length = args.max_seq_length
     all_dict = []
     len_aug = int(len(ori_examples)*aug_ratio)
-    len_ori = int(len(ori_examples)-len_aug)
+    ori_ratio = abs(aug_ratio - 1.0)
+    len_ori = int(len(ori_examples)*ori_ratio)
     cnt = 2
     num_no_aug = 1
     total_auged_ex = []
@@ -865,11 +860,10 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
     while len(total_auged_ex) < len_aug:
         total_k += 1
         not_qualify_index = []
-        features, auged_examples = aug_func(ori_examples, label_list, tokenizer, epochs, num_no_aug, args, seed,
-                                            max_seq_length, output_mode, num_show, pad_token=pad_token,
-                                            do_roberta=do_roberta)
+        features, auged_examples = aug_func(ori_examples, label_list, tokenizer, cnt, num_no_aug, args, seed,
+                                            max_seq_length, output_mode, num_show)
         eval_features = features
-        logger.info("***** Running data aug *****")
+        logger.info("***** Running data masking *****")
         logger.info("  Batch size = %d", args.eval_batch_size)
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
@@ -901,19 +895,11 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
             with torch.no_grad():
                 if use_bert:
                     seq_logits = model(input_ids, segment_ids, input_mask, labels=None)
-                elif do_roberta:
-                    if ssa_roberta:
-                        seq_logits, aug_logits, aug_loss = model(input_ids, input_mask, labels=None,
-                                                             token_real_label=token_real_label)
-                    else:
-                        outputs = model(input_ids, input_mask)
-                        seq_logits = outputs[0]
                 else:
                     seq_logits, aug_logits, aug_loss = model(input_ids, segment_ids, input_mask, labels=None,
                                                              token_real_label=token_real_label)
 
                 logits = F.softmax(seq_logits, dim=-1)
-                logits = logits.detach().cpu().numpy()
 
                 seq_logits = seq_logits.detach().cpu().numpy()
                 label_ids = label_ids.detach().cpu().numpy()
@@ -922,7 +908,7 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
                     outputs = np.argmax(seq_logits, axis=1)
                     for i in range(outputs.shape[0]):
                         if idx % cnt == 0 :
-                            pred=outputs[i]
+                            pred = outputs[i]
                             not_qualify_index.append(idx)
                         else:
                             if pred != label_ids[i]:
@@ -950,6 +936,7 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
 
                         idx += 1
 
+
         logger.info("total_k=%d", total_k)
         logger.info("num_of_all_examples=%d", idx)
         logger.info("num_of_ori_examples=%d", len(ori_examples))
@@ -963,7 +950,7 @@ def Aug_each_ckpt(ori_examples, label_list, model, tokenizer, args=None, num_sho
                 all_dict.append(x.__dict__)
                 total_auged_ex.append(x)
                 real_add += 1
-        logger.info("after remove same=%d,need len_aug=%d,real_add=%d", len(total_auged_ex), len_aug, real_add)
+        logger.info("after remove same=%d,need len_aug=%d,real_add=%d",len(total_auged_ex),len_aug,real_add)
 
 
     final_examples = random.sample(total_auged_ex, len_aug) + random.sample(ori_examples, len_ori)
