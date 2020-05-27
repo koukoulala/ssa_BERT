@@ -291,7 +291,6 @@ class RobertaSeqAttention(BertPreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.cls_weight = args.cls_weight
         self.attention_threshold = args.attention_threshold
-        self.do_softmax = args.do_softmax
         self.share_weight = args.share_weight
 
     def transpose_for_scores(self, x):
@@ -322,10 +321,6 @@ class RobertaSeqAttention(BertPreTrainedModel):
         attention_mask = (1.0 - attention_mask) * -10000.0
         attention_probs = attention_probs + attention_mask
         attention_probs = nn.Softmax(dim=-1)(attention_probs)
-        '''
-        for i in range(mask.size()[0]):
-            print("attention_probs_2", i, attention_probs[i])
-        '''
 
         attention_probs = attention_probs.unsqueeze(1)
         context_layer = torch.bmm(attention_probs, sequence_output).squeeze()
@@ -410,12 +405,10 @@ class RobertaForNSPAug(BertPreTrainedModel):
             self.token_cls = RobertaTokenAug_2(config, self.roberta.embeddings.word_embeddings.weight, args)
         #self.apply(self.init_bert_weights)
         self.aug_loss_weight = args.aug_loss_weight
-        self.aug_weight = args.aug_weight
         self.args = args
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                inputs_embeds=None,
-                labels=None, token_real_label=None):
+                inputs_embeds=None, labels=None, token_real_label=None):
         outputs = self.roberta(input_ids,
                                attention_mask=attention_mask,
                                token_type_ids=token_type_ids,
@@ -428,8 +421,7 @@ class RobertaForNSPAug(BertPreTrainedModel):
         aug_logits = self.token_cls(sequence_output)
         seq_logits = self.seq_cls(sequence_output, attention_mask, token_real_label, aug_logits, pooled_output)
 
-        weight = torch.FloatTensor([self.aug_weight, 1.0]).cuda()
-        loss_fct_aug = CrossEntropyLoss(ignore_index=-1, weight=weight)
+        loss_fct_aug = CrossEntropyLoss(ignore_index=-1)
         aug_loss = loss_fct_aug(aug_logits.view(-1, 2), token_real_label.view(-1))
 
         if labels is not None:
@@ -460,14 +452,12 @@ class RobertaForNSP_co(BertPreTrainedModel):
             self.token_cls = RobertaTokenAug_2(config, self.roberta.embeddings.word_embeddings.weight, args)
         #self.apply(self.init_bert_weights)
         self.aug_loss_weight = args.aug_loss_weight
-        self.aug_weight = args.aug_weight
         self.args = args
 
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                inputs_embeds=None,
-                labels=None, token_real_label=None):
+                inputs_embeds=None, labels=None, token_real_label=None):
         outputs = self.roberta(input_ids,
                                attention_mask=attention_mask,
                                token_type_ids=token_type_ids,
@@ -480,8 +470,7 @@ class RobertaForNSP_co(BertPreTrainedModel):
         aug_logits = self.token_cls(sequence_output)
         seq_logits = self.classifier(pooled_output)
 
-        weight = torch.FloatTensor([self.aug_weight, 1.0]).cuda()
-        loss_fct_aug = CrossEntropyLoss(ignore_index=-1, weight=weight)
+        loss_fct_aug = CrossEntropyLoss(ignore_index=-1)
         aug_loss = loss_fct_aug(aug_logits.view(-1, 2), token_real_label.view(-1))
 
         if labels is not None:
