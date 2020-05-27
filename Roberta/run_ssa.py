@@ -413,13 +413,19 @@ def main(args):
                                               num_labels=num_labels,
                                               finetuning_task=task_name,
                                               cache_dir=args.cache_dir if args.cache_dir else None)
-
-        model_class = RobertaForNSPAug
-        model = model_class.from_pretrained(args.model_name_or_path,
-                                            from_tf=bool('.ckpt' in args.model_name_or_path),
-                                            config=config,
-                                            cache_dir=args.cache_dir if args.cache_dir else None,
-                                            args=args)
+        if args.only_bert:
+            model_class = RobertaForSequenceClassification
+            model = model_class.from_pretrained(args.model_name_or_path,
+                                                from_tf=bool('.ckpt' in args.model_name_or_path),
+                                                config=config,
+                                                cache_dir=args.cache_dir if args.cache_dir else None)
+        else:
+            model_class = RobertaForNSPAug
+            model = model_class.from_pretrained(args.model_name_or_path,
+                                                from_tf=bool('.ckpt' in args.model_name_or_path),
+                                                config=config,
+                                                cache_dir=args.cache_dir if args.cache_dir else None,
+                                                args=args)
 
     model.cuda()
     if n_gpu > 1:
