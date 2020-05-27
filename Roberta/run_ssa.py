@@ -29,18 +29,13 @@ import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score
 from torch.nn import CrossEntropyLoss, MSELoss
-# from mlxtend.evaluate import mcnemar_table,mcnemar
 import copy
 
 from configuration_roberta import RobertaConfig
 from modeling_roberta import RobertaForSequenceClassification, RobertaForNSP_co, RobertaForNSPAug
 from tokenization_roberta import RobertaTokenizer
 from optimization import AdamW, get_linear_schedule_with_warmup
-
 from data_util import *
-from evaluation import get_score
-
-import scipy.stats as stats
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -51,7 +46,7 @@ parser = argparse.ArgumentParser()
 
 ## Required parameters
 parser.add_argument("--data_dir",
-                    default='/data/kou/glue_data/',
+                    default='./glue_data/',
                     type=str,
                     help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
 parser.add_argument("--task_name",
@@ -62,18 +57,10 @@ parser.add_argument("--output_dir",
                     default='./results_Roberta',
                     type=str,
                     help="The output directory where the model predictions and checkpoints will be written.")
-parser.add_argument("--Roberta_saved_dir",
-                    default='./results_Roberta',
+parser.add_argument("--ckpt",
+                    default='',
                     type=str,
-                    help="")
-parser.add_argument("--Roberta_sig_saved_dir",
-                    default='./glue_roberta_saved',
-                    type=str,
-                    help="")
-parser.add_argument("--direct_saved_file",
-                    default='None',
-                    type=str,
-                    help="")
+                    help="The checkpoint of models.")
 parser.add_argument("--vocab_file",
                     default='./vocab.txt',
                     type=str,
@@ -84,7 +71,10 @@ parser.add_argument("--tokenizer_name", default="", type=str,
                         help="Pretrained tokenizer name or path if not the same as model_name")
 parser.add_argument("--model_name_or_path", default="roberta-base", type=str,
                         help="Path to pre-trained model or shortcut name selected ")
-
+parser.add_argument("--only_bert",
+                    default=0,
+                    type=int,
+                    help="Only running bert.")
 
 ## Other parameters
 parser.add_argument("--cache_dir",
@@ -166,119 +156,50 @@ parser.add_argument("--ckpt_cache_dir",
 parser.add_argument("--cls_weight",
                     default=0.5,
                     type=float,
-                    help="w")
+                    help="The weight of [CLS] during linear combine operation in SSA.")
 parser.add_argument("--attention_threshold",
                     default=0.3,
                     type=float,
-                    help="k")
-parser.add_argument("--aug_weight",
-                    default=1.0,
-                    type=float,
-                    help="weight")
+                    help="Attention value above this threshold is used for computation")
 parser.add_argument("--aug_loss_weight",
                     default=0.3,
                     type=float)
-parser.add_argument("--search_hparam",
-                    default=False,
-                    action='store_true',
-                    help="Whether to search_hparam.")
-parser.add_argument("--conf_file",
-                    default='./conf_ratio.json',
-                    type=str,
-                    help="The output directory where the model predictions and checkpoints will be written.")
-parser.add_argument("--log_dir",
-                    default='./log/search_hparam',
-                    type=str,
-                    help="The output directory where the model predictions and checkpoints will be written.")
-parser.add_argument("--do_softmax",
-                    default=1,
-                    type=int,
-                    help="Whether to do softmax.")
-parser.add_argument("--available_gpus",
-                    default='1',
-                    type=str,
-                    help="available_gpus")
-parser.add_argument("--case_study",
-                    default=False,
-                    action='store_true',
-                    help="Whether to do case_study.")
-parser.add_argument("--share_weight",
-                    default=1,
-                    type=int,
-                    help="Whether to do softmax.")
 parser.add_argument("--num_show",
                     default=5,
                     type=int,
-                    help="Whether to show examples.")
+                    help="The number of showing examples.")
 parser.add_argument("--aug_threshold",
                     default=0.1,
                     type=float,
-                    help="k")
+                    help="The threshold of doing augmentation")
 parser.add_argument("--rm_threshold",
-                    default=0.9,
+                    default=0.7,
                     type=float,
-                    help="k")
+                    help="The threshold of masking tokens")
 parser.add_argument("--use_saved",
-                    default=1,
-                    type=int,
-                    help="Whether to do aug in every epoch.")
-parser.add_argument("--use_stilts",
-                    default=False,
-                    action='store_true',
-                    help="Whether to use_stilts checkpoint.")
-parser.add_argument("--stilts_checkpoint",
-                    default='./stilts_checkpoints',
-                    type=str,
-                    help="The directory of stilts checkpoint.")
-parser.add_argument("--BERT_ALL_DIR", default='./cache/bert_metadata', type=str)
-parser.add_argument("--do_first_eval",
-                    default=False,
-                    action='store_true',
-                    help="Whether to do aug in every epoch.")
-parser.add_argument("--do_add",
                     default=0,
                     type=int,
-                    help="Whether to do add.")
+                    help="Whether to use saved bert_ckpt.")
 parser.add_argument("--co_training",
                     default=False,
                     action='store_true',
                     help="Whether to do co_training.")
-parser.add_argument("--change_generate",
-                    default=0,
-                    type=int,
-                    help="Whether to do change_generate.")
-parser.add_argument("--double_ori",
+parser.add_argument("--share_weight",
                     default=1,
                     type=int,
-                    help="Whether to do double_ori.")
+                    help="Whether to share weight.")
+parser.add_argument("--double_ori",
+                    default=0,
+                    type=int,
+                    help="Whether to double original data.")
 parser.add_argument("--aug_ratio_each",
                     default=0.2,
                     type=float,
-                    help="k")
-parser.add_argument("--normalize_aug_loss",
+                    help="The mask ration of each epoch")
+parser.add_argument("--do_first_eval",
                     default=0,
                     type=int,
-                    help="Whether to normalize_aug_loss.")
-parser.add_argument("--change_label",
-                    default=0,
-                    type=int,
-                    help="Whether to change_label.")
-parser.add_argument("--fix_2",
-                    default=0,
-                    type=int,
-                    help="Whether to fix_2.")
-parser.add_argument("--do_whole_word_mask",
-                    default=0,
-                    type=int,
-                    help="Whether to do_whole_word_mask.")
-parser.add_argument("--significant_test",
-                    default=0,
-                    type=int,
-                    help="Whether to significant_test.")
-parser.add_argument("--mask_token",
-                    default=1,
-                    type=int,
-                    help="Whether to mask.")
+                    help="Whether to do first test.")
 
 parser.add_argument("--weight_decay", default=0.1, type=float, help="Weight deay if we apply some.")
 parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
@@ -336,8 +257,6 @@ def compute_metrics(task_name, preds, labels):
         return acc_and_f1(preds, labels)
     elif task_name == "mnli":
         return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "mnli-mm":
-        return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "qnli":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "rte":
@@ -345,80 +264,32 @@ def compute_metrics(task_name, preds, labels):
     elif task_name == "wnli":
         return {"acc": simple_accuracy(preds, labels)}
 
-    elif task_name == "snli":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "sst":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "cornell":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "figure":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "uci":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "twitter":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "text":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "imdb":
-        return {"acc": simple_accuracy(preds, labels)}
-
-    elif task_name == "sentihood_nli_b":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "sentihood_qa_b":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "semeval_nli_b":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "semeval_qa_b":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "test_sentihood":
-        return {"acc": simple_accuracy(preds, labels)}
     else:
         raise KeyError(task_name)
 
 def accuracy(out, labels, type="seq", task_name="others"):
-    if type=="seq":
-        if task_name=="others":
+    if type == "seq":
+        if task_name == "others":
             outputs = np.argmax(out, axis=1)
-            res=np.sum(outputs == labels)
+            res = np.sum(outputs == labels)
             return res
         else:
             return compute_metrics(task_name,out,labels)
     else:
-        res=0
+        res = 0
         outputs = np.argmax(out, axis=2)
-        num_tokens=0
+        num_tokens = 0
         for i in range(labels.shape[0]):
             for j in range(labels.shape[1]):
-                if labels[i][j]!=-1:
-                    num_tokens+=1
+                if labels[i][j] != -1:
+                    num_tokens += 1
                     if outputs[i][j] == labels[i][j]:
-                        res+=1
+                        res += 1
 
         return res,num_tokens
 
-def do_sig_test(preds_bert, preds_model, th = 0.05):
-    eval_res={}
-    same_std = True
-    levene = stats.levene(preds_bert, preds_model)
-    if levene.pvalue < th:
-        same_std = False
-    stat_val, p_val = stats.ttest_ind(preds_bert, preds_model, equal_var=same_std)
-    logger.info('Two-sample t-statistic D = %6.3f, p-value = %6.4f' % (stat_val, p_val))
-    eval_res["same_std"] = same_std
-    eval_res["levene_p"] = levene.pvalue
-    eval_res["stat_val"] = stat_val
-    eval_res["p_val"] = p_val
-    re_me = p_val
-
-    pass_sig = False
-    if p_val < th:
-        pass_sig = True
-    eval_res["pass_sig"] = pass_sig
-
-    return eval_res, re_me
 
 def main(args):
-    report_metric = [0.0, 0.0, 0.0, 0.0]
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
         import ptvsd
@@ -426,17 +297,13 @@ def main(args):
         ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
 
-    args.data_dir = os.path.join(args.data_dir,args.task_name)
-    args.output_dir = os.path.join(args.output_dir,args.task_name)
-    args.Roberta_saved_dir = os.path.join(args.Roberta_saved_dir, args.task_name)
-    args.Roberta_sig_saved_dir = os.path.join(args.Roberta_sig_saved_dir, args.task_name)
+    args.data_dir = os.path.join(args.data_dir, args.task_name)
+    args.output_dir = os.path.join(args.output_dir, args.task_name)
     logger.info("args = %s", args)
 
     processors = {
-
         "cola": ColaProcessor,
         "mnli": MnliProcessor,
-        "mnli-mm": MnliMismatchedProcessor,
         "mrpc": MrpcProcessor,
         "sst-2": Sst2Processor,
         "sts-b": StsbProcessor,
@@ -444,16 +311,9 @@ def main(args):
         "qnli": QnliProcessor,
         "rte": RteProcessor,
         "wnli": WnliProcessor,
-
-        "sentihood_nli_b": Sentihood_NLI_B_Processor,
-        "sentihood_qa_b": Sentihood_QA_B_Processor,
-        "semeval_nli_b": Semeval_NLI_B_Processor,
-        "semeval_qa_b": Semeval_QA_B_Processor,
-        "test_sentihood": test_Sentihood_Processor,
     }
 
     output_modes = {
-
         "cola": "classification",
         "mnli": "classification",
         "mrpc": "classification",
@@ -463,19 +323,8 @@ def main(args):
         "qnli": "classification",
         "rte": "classification",
         "wnli": "classification",
-
-        "sentihood_nli_b": "classification",
-        "sentihood_qa_b": "classification",
-        "semeval_nli_b": "classification",
-        "semeval_qa_b": "classification",
-        "test_sentihood": "classification"
     }
 
-    if args.do_compare:
-        have_test=[]
-    else:
-        have_test = ["mrpc","sst-2"]
-    absa_file = ["sentihood_nli_b", "sentihood_qa_b", "semeval_nli_b", "semeval_qa_b","test_sentihood"]
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -544,45 +393,19 @@ def main(args):
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None)
 
-    if args.significant_test == 1:
-        args.do_train = False
-        args.do_first_eval = True
-        ckpt_file = os.path.join(args.Roberta_sig_saved_dir, "dev_val_only_aug_False_only_seq_True_only_bert_True_with_attention_False")
-
-        model_class = RobertaForSequenceClassification
-        model = model_class.from_pretrained(ckpt_file)
-
-        model.cuda()
-        if n_gpu > 1:
-            model = torch.nn.DataParallel(model)
-
-        preds_bert = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, absa_file,
-             do_sig=True, only_seq=True)
-
-        if task_name in have_test and args.do_test:
-            logger.info("***** Running BERT testing *****")
-            eval_loss, eval_seq_loss, eval_aug_loss, eval_res_bert_test, eval_aug_accuracy, _, preds_model, labels_res = \
-                do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels,
-                            task_name, test_examples, type="test", only_seq=True)
-
-        if task_name == "mnli":
-            preds_bert_mm = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, absa_file,
-                             do_sig=True, only_seq=True, do_mm= True)
-
     if args.use_saved == 1:
+        bert_saved_dir = args.ckpt
         if args.co_training:
-            ckpt_file = os.path.join(args.Roberta_saved_dir,
-                                          "dev_val_only_aug_False_only_seq_True_only_bert_True_with_attention_False")
-
             model_class = RobertaForNSP_co
-            model = model_class.from_pretrained(ckpt_file, args=args)
+            model = model_class.from_pretrained(bert_saved_dir, args=args)
 
+        elif args.only_bert:
+            model_class = RobertaForSequenceClassification
+            model = model_class.from_pretrained(bert_saved_dir)
+            tokenizer = tokenizer_class.from_pretrained(bert_saved_dir)
         else:
-            ckpt_file = os.path.join(args.Roberta_saved_dir,
-                                          "dev_val_only_aug_False_only_seq_True_only_bert_True_with_attention_False")
-
             model_class = RobertaForNSPAug
-            model = model_class.from_pretrained(ckpt_file, args=args)
+            model = model_class.from_pretrained(bert_saved_dir, args=args)
 
     else:
         config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path,
@@ -595,8 +418,7 @@ def main(args):
                                             from_tf=bool('.ckpt' in args.model_name_or_path),
                                             config=config,
                                             cache_dir=args.cache_dir if args.cache_dir else None,
-                                            args=args
-                                            )
+                                            args=args)
 
     model.cuda()
     if n_gpu > 1:
@@ -606,113 +428,34 @@ def main(args):
     logger.info("cnt %s", str(cnt))
 
     if args.do_first_eval:
-        if args.significant_test == 0:
-            args.do_train = False
-            eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy, res_parts,_,_ = \
-                do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels, task_name,
-                        eval_examples, type="dev")
+        args.do_train = False
+        res_file = os.path.join(args.output_dir, "first_test.tsv")
+        eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy, res_parts = \
+            do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels, task_name,
+                    eval_examples, type="dev")
 
-            eval_res.update(res_parts)
-            if "acc" in eval_res:
-                tmp_list = [res_parts["acc_0"], res_parts["acc_1"], res_parts["acc_2"]]
-            elif "mcc" in eval_res:
-                tmp_list = [res_parts["mcc_0"], res_parts["mcc_1"], res_parts["mcc_2"]]
-            else:
-                tmp_list = [res_parts["corr_0"], res_parts["corr_1"], res_parts["corr_2"]]
-            eval_res["var"] = -np.var(tmp_list)
-            if task_name in have_test and args.do_test:
-                dev_res = copy.deepcopy(eval_res)
-                logger.info("***** Running testing *****")
-                eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy, _, preds_model, labels_res = \
-                    do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels,
-                                task_name, test_examples, type="test")
+        eval_res.update(res_parts)
+        for key in sorted(eval_res.keys()):
+            logger.info("first evaluation:  %s = %s", key, str(eval_res[key]))
 
-            if "acc" in eval_res:
-                re_me = eval_res["acc"]
-            elif "mcc" in eval_res:
-                re_me = eval_res["mcc"]
-            else:
-                re_me = eval_res["corr"]
+        idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model)
 
-            output_eval_file = os.path.join(args.output_dir, "start_roberta_B_results_" + str(re_me) + ".txt")
+        dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
+        dataframe.to_csv(res_file, index=False, sep='\t')
+        logger.info("  Num test length = %d", idx)
+        logger.info("  Done ")
 
+        # write mm test results
+        if task_name == "mnli":
             res_file = os.path.join(args.output_dir,
-                                    "start_roberta_B_test_results_" + str(re_me) + ".tsv")
+                                    "first_test_mm.tsv")
 
-            f_absa = None
-
-            f_absa, idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model,
-                                         absa_file,
-                                         f_absa=f_absa)
+            idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, do_mm=True)
 
             dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
             dataframe.to_csv(res_file, index=False, sep='\t')
             logger.info("  Num test length = %d", idx)
-            logger.info("  Done ")
-
-            # write mm test results
-            if task_name == "mnli":
-                res_file = os.path.join(args.output_dir,
-                                        "start_roberta_B_mm_results_" + str(re_me) + ".tsv")
-
-                _, idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode,
-                                        model, absa_file, do_mm=True)
-
-                dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
-                dataframe.to_csv(res_file, index=False, sep='\t')
-                logger.info("  Num test length = %d", idx)
-                logger.info("  Done write mm")
-
-        else:
-            logger.info("***** Running significant_test *****")
-            preds_model = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, absa_file,
-                                 do_sig=True)
-            eval_res, re_me = do_sig_test(preds_bert, preds_model, th=0.05)
-            eval_res_2, re_me_2 = do_sig_test(preds_bert, preds_model, th=0.01)
-
-            for k, v in eval_res_2.items():
-                eval_res[k + "_0.01"] = v
-
-            if task_name in have_test and args.do_test:
-                logger.info("***** Running testing *****")
-                eval_loss, eval_seq_loss, eval_aug_loss, eval_res_test, eval_aug_accuracy, _, preds_model, labels_res = \
-                    do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels,
-                                task_name, test_examples, type="test")
-
-                for k, v in eval_res_test.items():
-                    eval_res[k] = v
-
-                for k, v in eval_res_bert_test.items():
-                    eval_res['bert_'+k] = v
-
-            if task_name == "mnli":
-                preds_model_mm = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model,
-                                        absa_file, do_sig=True, do_mm=True)
-
-                eval_res_mm, re_me_mm = do_sig_test(preds_bert_mm, preds_model_mm, th=0.05)
-                eval_res_mm_2, re_me_mm_2 = do_sig_test(preds_bert_mm, preds_model_mm, th=0.01)
-                for k, v in eval_res_mm_2.items():
-                    eval_res_mm[k + "_0.01"] = v
-
-                output_eval_file = os.path.join(args.output_dir, "sig_roberta_results_" + str(re_me_mm) + "_mm.txt")
-                with open(output_eval_file, "w") as writer:
-                    logger.info("***** Start eval results *****")
-                    for key in sorted(eval_res_mm.keys()):
-                        logger.info("  %s = %s", key, str(eval_res_mm[key]))
-                        writer.write("%s = %s\n" % (key, str(eval_res_mm[key])))
-
-            output_eval_file = os.path.join(args.output_dir, "sig_roberta_results_" + str(re_me) + ".txt")
-
-        with open(output_eval_file, "w") as writer:
-            logger.info("***** Start eval results *****")
-            for key in sorted(eval_res.keys()):
-                logger.info("  %s = %s", key, str(eval_res[key]))
-                writer.write("%s = %s\n" % (key, str(eval_res[key])))
-
-            if args.significant_test == 0 and task_name in have_test and args.do_test:
-                for key in sorted(dev_res.keys()):
-                    logger.info("dev %s = %s", key, str(dev_res[key]))
-                    writer.write("dev %s = %s\n" % (key, str(dev_res[key])))
+            logger.info("  Done write mm")
 
 
     if args.do_train:
@@ -741,19 +484,24 @@ def main(args):
         aug_ratio = 0.0
         aug_seed = np.random.randint(0, 1000)
         for epoch in range(int(args.num_train_epochs)):
-            logger.info("epoch=%d,  aug_ratio = %f,  aug_seed=%d", epoch, aug_ratio, aug_seed)
-            train_examples = Aug_each_ckpt(ori_train_examples, label_list, model, tokenizer, args=args,
-                                         num_show=args.num_show, output_mode=output_mode, seed=aug_seed,
-                                         aug_ratio=aug_ratio, use_bert=False, change_generate=args.change_generate,
-                                         do_roberta=1, ssa_roberta=1, pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0])
-            if aug_ratio+args.aug_ratio_each < 1.0:
-                aug_ratio += args.aug_ratio_each
-            aug_seed += 1
+            if args.only_bert:
+                train_features = convert_examples_to_features(ori_train_examples, label_list, args.max_seq_length,
+                                tokenizer, num_show=args.num_show, output_mode=output_mode, args=args,
+                                pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0], do_roberta=1)
+            else:
+                logger.info("epoch=%d,  aug_ratio = %f,  aug_seed=%d", epoch, aug_ratio, aug_seed)
+                train_examples = Aug_each_ckpt(ori_train_examples, label_list, model, tokenizer, args=args,
+                                             num_show=args.num_show, output_mode=output_mode, seed=aug_seed,
+                                             aug_ratio=aug_ratio, use_bert=False,
+                                             do_roberta=1, ssa_roberta=1, pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0])
+                if aug_ratio + args.aug_ratio_each < 1.0:
+                    aug_ratio += args.aug_ratio_each
+                aug_seed += 1
 
-            train_features = convert_examples_to_features(
-                train_examples, label_list, args.max_seq_length, tokenizer, aug_n=1, num_show=args.num_show,
-                output_mode=output_mode,args=args, change_generate=args.change_generate,
-                pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0], do_roberta=1)
+                train_features = convert_examples_to_features(
+                    train_examples, label_list, args.max_seq_length, tokenizer, num_show=args.num_show,
+                    output_mode=output_mode, args=args,
+                    pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0], do_roberta=1)
 
             logger.info("Done convert features")
             all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
@@ -773,14 +521,18 @@ def main(args):
             train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
             logger.info("begin training")
-            tr_loss,tr_seq_loss,tr_aug_loss, train_seq_accuracy, train_aug_accuracy = 0, 0, 0, 0, 0
+            tr_loss, tr_seq_loss, tr_aug_loss, train_seq_accuracy, train_aug_accuracy = 0, 0, 0, 0, 0
             nb_tr_examples, nb_tr_steps, nb_tr_tokens = 0, 0, 0
             preds = []
             all_labels=[]
             for step, batch in enumerate(train_dataloader):
                 batch = tuple(t.cuda() for t in batch)
                 input_ids, input_mask, segment_ids, label_ids, token_real_label = batch
-                seq_logits, aug_logits, aug_loss = model(input_ids, input_mask, labels=None, token_real_label=token_real_label)
+                if args.only_bert:
+                    outputs = model(input_ids, input_mask)
+                    seq_logits = outputs[0]
+                else:
+                    seq_logits, aug_logits, aug_loss = model(input_ids, input_mask, labels=None, token_real_label=token_real_label)
                 if output_mode == "classification":
                     loss_fct = CrossEntropyLoss()
                     seq_loss = loss_fct(seq_logits.view(-1, num_labels), label_ids.view(-1))
@@ -788,21 +540,14 @@ def main(args):
                     loss_fct = MSELoss()
                     seq_loss = loss_fct(seq_logits.view(-1), label_ids.view(-1))
 
-                #
                 token_real_label = token_real_label.detach().cpu().numpy()
-                ori_aug_loss = aug_loss
-                if args.normalize_aug_loss == 1 and ori_aug_loss!=0.0:
-                    num_tokens = 0
-                    for i in range(token_real_label.shape[0]):
-                        for j in range(token_real_label.shape[1]):
-                            if token_real_label[i][j] != -1:
-                                num_tokens += 1
-                    aug_loss=ori_aug_loss/num_tokens
-                    #logger.info(ori_aug_loss,num_tokens,aug_loss,seq_loss)
 
                 w = args.aug_loss_weight
-                total_loss = (1 - w) * seq_loss + w * aug_loss
-                loss = total_loss
+                if args.only_bert:
+                    loss = seq_loss
+                else:
+                    loss = (1 - w) * seq_loss + w * aug_loss
+
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -824,14 +569,14 @@ def main(args):
                     all_labels.append(label_ids)
                 else:
                     preds[0] = np.append(preds[0], seq_logits, axis=0)
-                    all_labels[0]=np.append(all_labels[0],label_ids,axis=0)
+                    all_labels[0] = np.append(all_labels[0],label_ids,axis=0)
 
-                aug_logits = aug_logits.detach().cpu().numpy()
-
-                tmp_train_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
-                train_aug_accuracy += tmp_train_aug_accuracy
-                nb_tr_tokens += tmp_tokens
-                tr_aug_loss += aug_loss.mean().item()
+                if args.only_bert == 0:
+                    aug_logits = aug_logits.detach().cpu().numpy()
+                    tmp_train_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
+                    train_aug_accuracy += tmp_train_aug_accuracy
+                    nb_tr_tokens += tmp_tokens
+                    tr_aug_loss += aug_loss.mean().item()
 
                 if global_step % 20 == 0:
                     loss = tr_loss / nb_tr_steps
@@ -845,7 +590,7 @@ def main(args):
                         tmp_pred = np.squeeze(tmp_pred)
                     res = accuracy(tmp_pred, tmp_labels, task_name=task_name)
 
-                    if nb_tr_tokens!=0:
+                    if nb_tr_tokens != 0:
                         aug_avg = train_aug_accuracy / nb_tr_tokens
                     else:
                         aug_avg = 0.0
@@ -855,7 +600,6 @@ def main(args):
                     log_string += " total_loss={:<9.7f}".format(loss)
                     log_string += " seq_loss={:<9.7f}".format(seq_loss)
                     log_string += " aug_loss={:<9.7f}".format(aug_loss)
-                    #log_string += " ori_aug_loss={:<9.7f}".format(ori_aug_loss)
                     log_string += " lr={:<9.7f}".format(scheduler.get_lr()[0])
                     log_string += " |g|={:<9.7f}".format(total_norm)
                     #log_string += " tr_seq_acc={:<9.7f}".format(seq_avg)
@@ -874,77 +618,24 @@ def main(args):
             train_loss = tr_loss / nb_tr_steps
 
             if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0) and epoch % 1 == 0:
-                eval_loss,eval_seq_loss,eval_aug_loss,eval_res,eval_aug_accuracy,res_parts,_,_=\
-                    do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_labels,task_name,eval_examples,type="dev")
+                eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy, res_parts = \
+                    do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mode, num_labels, task_name, eval_examples, type="dev")
 
                 if "acc" in eval_res:
                     tmp_acc = eval_res["acc"]
                 elif "mcc" in eval_res:
                     tmp_acc = eval_res["mcc"]
                 else:
-                    tmp_acc=eval_res["corr"]
+                    tmp_acc = eval_res["corr"]
 
                 if tmp_acc >= best_val_acc:
                     best_val_acc = tmp_acc
                     dev_test = "dev"
 
-                    if task_name in have_test and args.do_test:
-                        # save validate results first
-                        val_result = {'eval_total_loss': eval_loss,
-                                      'eval_seq_loss' : eval_seq_loss,
-                                      'eval_aug_loss' : eval_aug_loss,
-                                      'eval_aug_accuracy' : eval_aug_accuracy,
-                                      'global_step': global_step,
-                                      'train_loss': train_loss,
-                                      'best_epoch':epoch,
-                                      'train_batch_size':args.train_batch_size,
-                                      'args':args}
-
-                        val_result.update(eval_res)
-                        val_result.update(res_parts)
-
-                        logger.info("***** Running testing *****")
-                        dev_test = "test"
-                        eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy,_, preds_model, labels_res = \
-                            do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mode, num_labels,
-                                        task_name, test_examples, type="test")
-
-                    if "acc" in eval_res:
-                        report_metric[0] = eval_res["acc"]
-                        report_metric[1] = round(eval_res["acc"], 3)
-                        if task_name in have_test:
-                            report_metric[2] = eval_res["acc"]
-                        else:
-                            tmp_list = [res_parts["acc_0"], res_parts["acc_1"], res_parts["acc_2"]]
-                            report_metric[2] = -np.var(tmp_list)
-                    elif "mcc" in eval_res:
-                        report_metric[0] = eval_res["mcc"]
-                        report_metric[1] = round(eval_res["mcc"], 3)
-                        if task_name in have_test:
-                            report_metric[2] = eval_res["mcc"]
-                        else:
-                            tmp_list = [res_parts["mcc_0"], res_parts["mcc_1"], res_parts["mcc_2"]]
-                            report_metric[2] = -np.var(tmp_list)
-                    else:
-                        report_metric[0] = eval_res["corr"]
-                        report_metric[1] = round(eval_res["corr"], 3)
-                        if task_name in have_test:
-                            report_metric[2] = eval_res["corr"]
-                        else:
-                            tmp_list = [res_parts["corr_0"], res_parts["corr_1"], res_parts["corr_2"]]
-                            report_metric[2] = -np.var(tmp_list)
-
-                    report_metric[3] = 0.0
-                    logger.info("report_metric", report_metric)
-
                     model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-                    output_model_dir = os.path.join(args.output_dir,"roberta_B_" + str(report_metric[0]))
+                    output_model_dir = os.path.join(args.output_dir, "dev_" + str(tmp_acc))
                     if not os.path.exists(output_model_dir):
-                        try:
-                            os.makedirs(output_model_dir)
-                        except:
-                            pass
-                            #logger.info("catch a error at output_model_dir")
+                        os.makedirs(output_model_dir)
                     model_to_save.save_pretrained(output_model_dir)
                     tokenizer.save_pretrained(output_model_dir)
                     output_model_file = os.path.join(output_model_dir, 'pytorch_model.bin')
@@ -956,26 +647,15 @@ def main(args):
                               'eval_aug_accuracy' : eval_aug_accuracy,
                               'global_step': global_step,
                               'train_loss': train_loss,
-                              'best_epoch':epoch,
-                              'train_batch_size':args.train_batch_size,
-                              'args':args}
+                              'best_epoch': epoch,
+                              'train_batch_size': args.train_batch_size,
+                              'args': args}
 
                     result.update(eval_res)
-                    if task_name not in have_test:
-                        result.update(res_parts)
-
-                    if task_name in have_test:
-                        # save eval results
-                        output_eval_file = os.path.join(args.output_dir,
-                                                        "roberta_b_results_" + str(report_metric[0]) + ".txt")
-                        with open(output_eval_file, "w") as writer:
-                            logger.info("***** Eval results *****")
-                            for key in sorted(val_result.keys()):
-                                logger.info("  %s = %s", key, str(val_result[key]))
-                                writer.write("%s = %s\n" % (key, str(val_result[key])))
+                    result.update(res_parts)
 
                     output_eval_file = os.path.join(args.output_dir,
-                                                    dev_test + "_roberta_b_results_" + str(report_metric[0]) + ".txt")
+                                                    dev_test + "_results_" + str(tmp_acc) + ".txt")
                     with open(output_eval_file, "w") as writer:
                         logger.info("***** Test results *****")
                         for key in sorted(result.keys()):
@@ -983,41 +663,22 @@ def main(args):
                             writer.write("%s = %s\n" % (key, str(result[key])))
 
                     # write test results
-                    if args.do_test and args.significant_test == 0 :
-                        res_file = os.path.join(args.output_dir,
-                                                    "roberta_B_test_results_" +str(report_metric[0])+".tsv")
+                    if args.do_test:
+                        res_file = os.path.join(args.output_dir, "test_" + str(tmp_acc)+".tsv")
 
-                        f_absa = None
-                        if task_name in absa_file:
-                            absa_path = os.path.join(args.output_dir, "absa_roberta_test_b_" + str(report_metric[0]) + ".txt")
-                            f_absa = open(absa_path, "w")
+                        idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model)
 
-                        f_absa, idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, absa_file,
-                                       f_absa=f_absa)
-
-                        if task_name in absa_file:
-                            f_absa.close()
-                            res_absa = get_score(task_name, absa_path, args.data_dir)
-                            output_absa_file = os.path.join(args.output_dir,
-                                                            "absa_roberta_results_b_" + str(report_metric[0]) + ".txt")
-                            with open(output_absa_file, "w") as writer:
-                                logger.info("***** Eval results *****")
-                                for key in sorted(res_absa.keys()):
-                                    logger.info("  %s = %s", key, str(res_absa[key]))
-                                    writer.write("%s = %s\n" % (key, str(res_absa[key])))
-                        else:
-                            dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
-                            dataframe.to_csv(res_file, index=False, sep='\t')
+                        dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
+                        dataframe.to_csv(res_file, index=False, sep='\t')
                         logger.info("  Num test length = %d", idx)
                         logger.info("  Done ")
 
                         # write mm test results
                         if task_name == "mnli":
                             res_file = os.path.join(args.output_dir,
-                                                    "mm_roberta_results_b_" + str(report_metric[0]) + ".tsv")
+                                                    "mm_roberta_results_b_" + str(tmp_acc) + ".tsv")
 
-                            _, idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode,
-                                                         model, absa_file, do_mm=True)
+                            idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, do_mm=True)
 
                             dataframe = pd.DataFrame({'index': range(idx), 'prediction': preds})
                             dataframe.to_csv(res_file, index=False, sep='\t')
@@ -1027,16 +688,14 @@ def main(args):
                 else:
                     logger.info("  tmp_val_acc = %f", tmp_acc)
 
-    if args.search_hparam:
-        return report_metric
 
-def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_labels,task_name,eval_examples, only_seq = False, type="dev"):
+def do_evaluate(args, processor, label_list, tokenizer, model, epoch, output_mode, num_labels, task_name, eval_examples, type="dev"):
 
     nb_eval_steps, nb_eval_examples, nb_eval_tokens = 0, 0, 0
     eval_loss, eval_seq_loss, eval_aug_loss, eval_seq_accuracy, eval_aug_accuracy = 0, 0, 0, 0, 0
     eval_features = convert_examples_to_features(
         eval_examples, label_list, args.max_seq_length, tokenizer,type=type,num_show=args.num_show,
-        output_mode=output_mode,args=args, change_generate=args.change_generate,
+        output_mode=output_mode,args=args,
         pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0], do_roberta=1)
     logger.info("  Num examples = %d", len(eval_examples))
 
@@ -1073,14 +732,14 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
         model.eval()
-        preds=[]
-        all_labels=[]
+        preds = []
+        all_labels = []
         for batch in eval_dataloader:
             batch = tuple(t.cuda() for t in batch)
             input_ids, input_mask, segment_ids, label_ids, token_real_label = batch
 
             with torch.no_grad():
-                if only_seq:
+                if args.only_bert:
                     outputs = model(input_ids, input_mask)
                     seq_logits = outputs[0]
                     aug_loss = 0.0
@@ -1094,8 +753,10 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
                     loss_fct = MSELoss()
                     seq_loss = loss_fct(seq_logits.view(-1), label_ids.view(-1))
                 w = args.aug_loss_weight
-                total_loss = (1 - w) * seq_loss + w * aug_loss
-                loss = total_loss
+                if args.only_bert:
+                    loss = seq_loss
+                else:
+                    loss = (1 - w) * seq_loss + w * aug_loss
 
             seq_logits = seq_logits.detach().cpu().numpy()
             label_ids = label_ids.detach().cpu().numpy()
@@ -1108,14 +769,13 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
 
             eval_seq_loss += seq_loss.mean().item()
 
-            if only_seq == False:
+            if args.only_bert == 0:
                 aug_logits = aug_logits.detach().cpu().numpy()
                 token_real_label = token_real_label.detach().cpu().numpy()
-                tmp_eval_aug_accuracy,tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
+                tmp_eval_aug_accuracy, tmp_tokens = accuracy(aug_logits, token_real_label, type="aug")
                 eval_aug_accuracy += tmp_eval_aug_accuracy
                 nb_eval_tokens +=tmp_tokens
                 eval_aug_loss += aug_loss.mean().item()
-
 
             eval_loss += loss.mean().item()
             nb_eval_examples += input_ids.size(0)
@@ -1124,8 +784,7 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
             if nb_eval_steps % 10 == 0:
                 loss = eval_loss / nb_eval_steps
                 seq_loss = eval_seq_loss / nb_eval_steps
-                if only_seq == False:
-                    aug_loss = eval_aug_loss / nb_eval_steps
+                aug_loss = eval_aug_loss / nb_eval_steps
                 tmp_pred = preds[0]
                 tmp_labels = all_labels[0]
                 if output_mode == "classification":
@@ -1134,7 +793,7 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
                     tmp_pred = np.squeeze(tmp_pred)
                 res = accuracy(tmp_pred, tmp_labels, task_name=task_name)
 
-                if nb_eval_tokens!=0:
+                if nb_eval_tokens != 0:
                     aug_avg = eval_aug_accuracy / nb_eval_tokens
                 else:
                     aug_avg = 0.0
@@ -1152,8 +811,7 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
 
         eval_loss = eval_loss / nb_eval_steps
         eval_seq_loss = eval_seq_loss / nb_eval_steps
-        if only_seq == False:
-            eval_aug_loss = eval_aug_loss / nb_eval_steps
+        eval_aug_loss = eval_aug_loss / nb_eval_steps
         tmp_pred = preds[0]
         tmp_labels = all_labels[0]
         if output_mode == "classification":
@@ -1167,23 +825,18 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
         else:
             eval_aug_accuracy = 0.0
 
-        if args.significant_test == 1 and type == "test":
-            preds_res = tmp_pred
-            labels_res = tmp_labels
-
         if type == "dev":
-
             eval_loss_all += eval_loss
             eval_seq_loss_all += eval_seq_loss
             eval_aug_loss_all += eval_aug_loss
             eval_aug_accuracy_all += eval_aug_accuracy
             for key in res:
                 res_parts[key + "_" + str(kk)] = res[key]
-            if kk==0:
-                res_all=res
+            if kk == 0:
+                res_all = res
             else:
                 for key in res:
-                    res_all[key]+=res[key]
+                    res_all[key] += res[key]
 
     if type == "dev":
         eval_loss = eval_loss_all/3.0
@@ -1193,20 +846,18 @@ def do_evaluate(args,processor,label_list,tokenizer,model,epoch,output_mode,num_
         for key in res_all:
             res[key] = res_all[key]/3.0
 
-    return eval_loss,eval_seq_loss,eval_aug_loss,res,eval_aug_accuracy,res_parts, preds_res, labels_res
+    return eval_loss, eval_seq_loss, eval_aug_loss, res, eval_aug_accuracy, res_parts
 
-def do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, absa_file,
-             f_absa=None, do_mm=False, do_sig=False, only_seq=False):
+
+def do_test(args, label_list, task_name, processor, tokenizer, output_mode, model, do_mm=False):
     label_map = {i: label for i, label in enumerate(label_list)}
-    if task_name == 'sst-2':
-        test_w_examples = processor.get_test_nolabel_examples(args.data_dir)
-    elif do_mm:
+    if do_mm:
         test_w_examples = processor.get_mm_test_examples(args.data_dir)
     else:
         test_w_examples = processor.get_test_examples(args.data_dir)
     eval_features = convert_examples_to_features(
         test_w_examples, label_list, args.max_seq_length, tokenizer, type="test",
-        num_show=args.num_show, output_mode=output_mode, args=args, change_generate=args.change_generate,
+        num_show=args.num_show, output_mode=output_mode, args=args,
         pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0], do_roberta=1)
     logger.info("***** Running test *****")
     logger.info("  Num examples = %d", len(test_w_examples))
@@ -1228,7 +879,7 @@ def do_test(args, label_list, task_name, processor, tokenizer, output_mode, mode
         batch = tuple(t.cuda() for t in batch)
         input_ids, input_mask, segment_ids, token_real_label = batch
         with torch.no_grad():
-            if only_seq:
+            if args.only_bert:
                 outputs = model(input_ids, input_mask)
                 seq_logits = outputs[0]
             else:
@@ -1236,46 +887,22 @@ def do_test(args, label_list, task_name, processor, tokenizer, output_mode, mode
                                                      labels=None,
                                                      token_real_label=token_real_label)
 
-            logits = F.softmax(seq_logits, dim=-1)
-            logits = logits.detach().cpu().numpy()
             seq_logits = seq_logits.detach().cpu().numpy()
-            if do_sig:
-                if len(preds) == 0:
-                    preds.append(seq_logits)
-                else:
-                    preds[0] = np.append(preds[0], seq_logits, axis=0)
-            else:
-                if output_mode == "classification":
-                    outputs = np.argmax(seq_logits, axis=1)
-                    for i in range(outputs.shape[0]):
-                        if task_name in absa_file:
-                            f_absa.write(str(outputs[i]))
-                            for ou in logits[i]:
-                                f_absa.write(" " + str(ou))
-                            f_absa.write("\n")
-                        else:
-                            pred_label = label_map[outputs[i]]
-                            preds.append(pred_label)
-                            idx += 1
 
-                elif output_mode == "regression":
-                    outputs = np.squeeze(seq_logits)
-                    for i in range(outputs.shape[0]):
-                        preds.append(outputs[i])
-                        idx += 1
+            if output_mode == "classification":
+                outputs = np.argmax(seq_logits, axis=1)
+                for i in range(outputs.shape[0]):
+                    pred_label = label_map[outputs[i]]
+                    preds.append(pred_label)
+                    idx += 1
 
-    if do_sig:
-        tmp_pred = preds[0]
-        if output_mode == "classification":
-            tmp_pred = np.argmax(tmp_pred, axis=1)
-        elif output_mode == "regression":
-            tmp_pred = np.squeeze(tmp_pred)
+            elif output_mode == "regression":
+                outputs = np.squeeze(seq_logits)
+                for i in range(outputs.shape[0]):
+                    preds.append(outputs[i])
+                    idx += 1
 
-        preds_res = tmp_pred
-
-        return preds_res
-    else:
-        return f_absa, idx, preds
+        return idx, preds
 
 if __name__ == "__main__":
     main(args)

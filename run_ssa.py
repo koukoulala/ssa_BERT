@@ -34,14 +34,12 @@ from torch.utils.data.sampler import  RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
 import copy
-import torch
 from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from modeling import BertForNSPAug, BertConfig, WEIGHTS_NAME, CONFIG_NAME, BertForSequenceClassification, BertForNSP_co
 from tokenization import BertTokenizer
 from optimization import BertAdam, warmup_linear
 from data_util import *
 from torch.nn import CrossEntropyLoss, MSELoss
-from evaluation import get_score
 
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -201,7 +199,7 @@ parser.add_argument("--aug_ratio_each",
                     default=0.2,
                     type=float,
                     help="The mask ration of each epoch")
-parser.add_argument("--do_first_test",
+parser.add_argument("--do_first_eval",
                     default=0,
                     type=int,
                     help="Whether to do first test.")
@@ -413,10 +411,17 @@ def main(args):
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
 
-    if args.do_first_test:
+    if args.do_first_eval:
         args.do_train = False
-        res_file = os.path.join(args.output_dir,
-                                "first_test.tsv")
+        res_file = os.path.join(args.output_dir, "first_test.tsv")
+
+        eval_loss, eval_seq_loss, eval_aug_loss, eval_res, eval_aug_accuracy, res_parts = \
+            do_evaluate(args, processor, label_list, tokenizer, model, 0, output_mode, num_labels, task_name,
+                        eval_examples, type="dev")
+        eval_res.update(res_parts)
+
+        for key in sorted(eval_res.keys()):
+            logger.info("first evaluation:  %s = %s", key, str(eval_res[key]))
 
         idx, preds = do_test(args, label_list, task_name, processor, tokenizer, output_mode, model)
 
@@ -469,13 +474,9 @@ def main(args):
                                 tokenizer, num_show=args.num_show, output_mode=output_mode, args=args)
             else:
                 logger.info("epoch=%d,  aug_ratio = %f,  aug_seed=%d", epoch, aug_ratio, aug_seed)
-                if epoch == 0:
-                    tmp_aug_ratio = 0.0
-                else:
-                    tmp_aug_ratio = aug_ratio
                 train_examples = Aug_each_ckpt(ori_train_examples, label_list, model, tokenizer, args=args,
                                              num_show=args.num_show, output_mode=output_mode, seed=aug_seed,
-                                             aug_ratio=tmp_aug_ratio, use_bert=False)
+                                             aug_ratio=aug_ratio, use_bert=False)
                 if aug_ratio + args.aug_ratio_each < 1.0:
                     aug_ratio += args.aug_ratio_each
                 aug_seed += 1
