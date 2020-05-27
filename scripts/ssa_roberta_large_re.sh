@@ -124,7 +124,7 @@ python -u Roberta/run_ssa.py \
   --model_name_or_path='roberta-large' \
   --ckpt='../ssa_ckpt_r_large/QQP/ssa_base' \
   --do_first_eval \
-  --cls_weight=0.2 \
+  --cls_weight=0.5 \
   --attention_threshold=0.3 \
   --share_weight=1 \
 "$@"
